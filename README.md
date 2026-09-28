@@ -58,7 +58,7 @@ While optimized out-of-the-box for **RetroPie**, this tool works with **any Linu
    ```powershell
    wsl --install
    ```
-3. **`usbipd-win`** (version 4.0 or newer):
+3. **`usbipd-win`** (version 4.0 or newer, the script will auto install it if it's missing):
    Install via Windows Package Manager (`winget`):
    ```powershell
    winget install dorssel.usbipd-win
