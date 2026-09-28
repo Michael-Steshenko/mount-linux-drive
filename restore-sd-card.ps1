@@ -56,11 +56,22 @@ foreach ($d in $offlineDisks) {
     Set-Disk -Number $d.Number -IsOffline $false -ErrorAction SilentlyContinue
 }
 
-# 3. Wait for Windows to enumerate
+# 3. If any card reader is in 'No Media' state, attempt to restart its USB device
+$noMediaDisks = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'USB' -and $_.OperationalStatus -match 'No Media' })
+if ($noMediaDisks.Count -gt 0) {
+    Write-Host "  Card reader detected with 'No Media' - restarting USB device..." -ForegroundColor Yellow
+    $readerPnp = Get-PnpDevice | Where-Object { $_.InstanceId -like "*05E3*0764*" } | Select-Object -First 1
+    if ($readerPnp) {
+        pnputil /restart-device "$($readerPnp.InstanceId)" 2>$null | Out-Null
+        Start-Sleep -Seconds 2
+    }
+}
+
+# 4. Wait for Windows to enumerate
 Write-Host "  Waiting for Windows to re-detect drive letters..." -ForegroundColor Cyan
 Start-Sleep -Seconds 2
 
-# 4. Check for drive letters
+# 5. Check for drive letters
 $volumes = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter })
 Write-Host ""
 Write-Host "  Currently available drive letters:" -ForegroundColor Green
@@ -70,6 +81,8 @@ foreach ($v in $volumes) {
 }
 
 Write-Host ""
-Write-Host "  Done! If drive D: is not visible, simply unplug and re-insert the USB-C adapter." -ForegroundColor Cyan
+Write-Host "  Done! If drive D: is still not visible:" -ForegroundColor Cyan
+Write-Host "  1. Pull out the micro-SD card from the adapter slot and re-seat it firmly." -ForegroundColor Yellow
+Write-Host "  2. If still unread, unplug and re-insert the USB-C adapter." -ForegroundColor Yellow
 Write-Host ""
 Read-Host "  Press Enter to exit"

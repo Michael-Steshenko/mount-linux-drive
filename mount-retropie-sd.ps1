@@ -338,12 +338,13 @@ foreach ($rawLine in $rawList) {
         }
 
         $parsedDevices += [PSCustomObject]@{
-            BusId    = $busid
-            VidPid   = $vidpid
-            Device   = $device
-            State    = $state
-            Details  = $device
-            IsSdCard = $false
+            BusId         = $busid
+            VidPid        = $vidpid
+            Device        = $device
+            State         = $state
+            Details       = $device
+            IsSdCard      = $false
+            IsSystemDrive = $false
         }
     }
 }
@@ -353,6 +354,23 @@ if ($parsedDevices.Count -eq 0) {
     Write-Err "Make sure your SD card reader is plugged in."
     Read-Host "  Press Enter to exit"; exit 1
 }
+
+# Identify system/boot disks to prevent accidental selection
+$systemDiskIds = @{}
+try {
+    $sysDisks = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem -or $_.Size -gt 550GB })
+    foreach ($sd in $sysDisks) {
+        $p = $sd.Path
+        if ($p -match 'VID_([0-9a-fA-F]{4})&PID_([0-9a-fA-F]{4})') {
+            $systemDiskIds[("$($Matches[1]):$($Matches[2])").ToLower()] = $true
+        }
+        $wmi = Get-CimInstance Win32_DiskDrive -Filter "Index = $($sd.Number)" -ErrorAction SilentlyContinue
+        if ($wmi -and $wmi.PNPDeviceID -match 'VID_([0-9a-fA-F]{4})&PID_([0-9a-fA-F]{4})') {
+            $systemDiskIds[("$($Matches[1]):$($Matches[2])").ToLower()] = $true
+        }
+    }
+} catch {}
+$systemDiskIds['0080:a001'] = $true
 
 # Separate storage devices from input/other devices
 $storageList = @()
@@ -366,6 +384,7 @@ foreach ($d in $parsedDevices) {
 
     $details = $d.Device
     $isSd = $false
+    $isSys = $systemDiskIds.ContainsKey($key)
 
     if ($storageMap.ContainsKey($key)) {
         $st = $storageMap[$key]
@@ -374,20 +393,23 @@ foreach ($d in $parsedDevices) {
         if ($st.Volumes) { $tagParts += $st.Volumes }
         $tag = if ($tagParts.Count -gt 0) { " (" + ($tagParts -join ", ") + ")" } else { "" }
         $details = "$($d.Device)$tag"
-        # Only mark as SD card if validated by size and boot label
-        if ($st.IsSdCard) { $isSd = $true }
+        # Only mark as SD card if validated by size and boot label and not system disk
+        if ($st.IsSdCard -and -not $isSys) { $isSd = $true }
     } elseif ($key -eq '05e3:0764' -or $d.Device -match '(?i)Card Reader') {
         # Card reader hardware on USB, but no media is mounted in Windows
         $details = "$($d.Device) (SD Reader - No card detected)"
         $isSd = $false
+    } elseif ($isSys) {
+        $details = "$($d.Device) (Windows System/Boot Drive)"
     }
 
     if ($details.Length -gt 45) {
         $details = $details.Substring(0, 42) + "..."
     }
 
-    $d.Details  = $details
-    $d.IsSdCard = $isSd
+    $d.Details       = $details
+    $d.IsSdCard      = $isSd
+    $d.IsSystemDrive = $isSys
 
     if ($isStorage) {
         $storageList += $d
@@ -396,8 +418,17 @@ foreach ($d in $parsedDevices) {
     }
 }
 
-# Put the SD card first among storage devices
-$storageList = @($storageList | Sort-Object { if ($_.IsSdCard) { 0 } else { 1 } })
+# Sorting priority:
+# 0 = Verified SD Card
+# 1 = Card Reader hardware (even if no card detected yet)
+# 2 = Other non-system storage
+# 3 = Windows Boot / System drives (ALWAYS at the bottom!)
+$storageList = @($storageList | Sort-Object {
+    if ($_.IsSdCard) { 0 }
+    elseif ($_.VidPid.ToLower() -eq '05e3:0764' -or $_.Device -match '(?i)Card Reader') { 1 }
+    elseif ($_.IsSystemDrive) { 3 }
+    else { 2 }
+})
 
 # Full list with storage devices first
 $usbDevices = @($storageList) + @($otherList)
@@ -430,6 +461,17 @@ for ($i = 0; $i -lt $storageList.Count; $i++) {
     } else {
         Write-Host ""
     }
+}
+
+# If a card reader is present but no card is detected, warn the user
+$unseatedReader = $storageList | Where-Object { ($_.VidPid.ToLower() -eq '05e3:0764' -or $_.Device -match '(?i)Card Reader') -and -not $_.IsSdCard } | Select-Object -First 1
+if ($unseatedReader) {
+    Write-Host ""
+    Write-Wrn "Card reader ($($unseatedReader.BusId)) detected, but NO card is detected in the slot."
+    Write-Wrn "If your SD card is plugged into the adapter:"
+    Write-Wrn "  1. Unplug the USB-C adapter from your PC."
+    Write-Wrn "  2. Pull out the micro-SD card and re-seat it firmly."
+    Write-Wrn "  3. Plug the USB-C adapter back in."
 }
 
 if ($otherList.Count -gt 0) {
